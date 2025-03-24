@@ -9,6 +9,7 @@ import numpy as np
 import math
 import matplotlib.animation as animation
 from matplotlib.animation import PillowWriter
+from apollo.map_service import MapService
 
 APOLLO_VEHICLE_LENGTH = 4.933
 APOLLO_VEHICLE_WIDTH = 2.11
@@ -40,8 +41,11 @@ def plot_scenario(record_path: str, map_bin: str, out_dir: str):
     assert Path(map_bin).exists(), "HD Map does not exist!"
     Path(out_dir).mkdir(parents=True, exist_ok=True)
 
+    map_service = MapService()
+    map_service.load_map_from_file(map_bin)
+
     map = Map()
-    #print(dir(map))
+    # print(dir(map))
     with open(map_bin, "rb") as fp:
         map.ParseFromString(fp.read())
 
@@ -85,7 +89,7 @@ def plot_scenario(record_path: str, map_bin: str, out_dir: str):
             if polygon_points:
                 polygon_points.append(polygon_points[0])
                 frame_obstacles.append((polygon_points, obs_type))
-                
+
         obstacle_positions.append(frame_obstacles)
 
     crosswalks, stop_lines = [], []
@@ -112,7 +116,6 @@ def plot_scenario(record_path: str, map_bin: str, out_dir: str):
 
     num_frames = min(len(ego_positions), len(obstacle_positions))
     interval = 1000 / 24
-
 
     def update(frame):
         ax.clear()
@@ -150,13 +153,13 @@ def plot_scenario(record_path: str, map_bin: str, out_dir: str):
             4: "purple", # Bicycle
             5: "red" # Vehicle
         }
-        
+
         for obstacle, obs_type in obstacle_positions[frame]:
             if obs_type in obstacle_colors:
                 ax.fill([p[0] for p in obstacle], [p[1] for p in obstacle], color=obstacle_colors[obs_type])
             else:
                 print(f"Warning: Unknown obstacle type {obs_type}, skipping")
-        
+
         # Dynamically modify the Stop Line color
         for signal_id, signal_data in signal_map.items():
             color = "red"
@@ -171,7 +174,6 @@ def plot_scenario(record_path: str, map_bin: str, out_dir: str):
             for stop_line in signal_data["stop_line"]:
                 ax.plot([p[0] for p in stop_line], [p[1] for p in stop_line], color=color, linewidth=2)
 
-        
         for crosswalk in crosswalks:
             ax.fill([p[0] for p in crosswalk], [p[1] for p in crosswalk], color="lightgray", alpha=0.5)
         ax.set_xlim(ego_x - 100, ego_x + 100)
