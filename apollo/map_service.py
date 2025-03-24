@@ -1,9 +1,11 @@
 # /apollo/modules/map/hdmap/hdmap_impl.h
 # /apollo/modules/map/hdmap/hdmap_impl.cc
 
+import pickle
 from dataclasses import dataclass
 from functools import lru_cache
 from math import atan2, pi
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
@@ -17,9 +19,7 @@ from apollo_modules.modules.map.proto.map_overlap_pb2 import Overlap
 from apollo_modules.modules.map.proto.map_pb2 import Map
 from apollo_modules.modules.map.proto.map_signal_pb2 import Signal
 from apollo_modules.modules.map.proto.map_stop_sign_pb2 import StopSign
-from .kdtree import KDTree, KDTreeParams
-
-__loaded_instances = dict()
+from apollo.kdtree import KDTree, KDTreeParams
 
 
 @dataclass
@@ -43,6 +43,12 @@ def is_allowed_to_cross(boundary: LaneBoundary):
     return True
 
 
+def load_map_service(hd_map: str) -> "MapService":
+    ms = MapService()
+    ms.load_map_from_file(hd_map)
+    return ms
+
+
 class MapService:
     kSearchRadius = 3.0
     kMaxHeadingDiff = 1.0
@@ -56,6 +62,7 @@ class MapService:
     stop_sign_kdtree: KDTree
 
     def __init__(self) -> None:
+        self.hd_map_path: str = ""
         self.lane_table: Dict[str, Lane] = dict()
         self.junction_table: Dict[str, Junction] = dict()
         self.crosswalk_table: Dict[str, Crosswalk] = dict()
@@ -76,6 +83,7 @@ class MapService:
         self.obs_routing_graph = nx.DiGraph()
 
     def load_map_from_file(self, filename: str):
+        self.hd_map_path = filename
         map = Map()
         with open(filename, "rb") as fp:
             map.ParseFromString(fp.read())
@@ -95,14 +103,16 @@ class MapService:
                 table_name[obj.id.id] = obj
 
         self.build_lane_segment_kd_tree()
-        # self.build_routing_graph()
+        self.build_routing_graph()
         # self.find_non_junction_lanes()
         # self.build_junction_polygon_kd_tree()
         # self.build_signal_segment_kd_tree()
         # self.build_crosswalk_polygon_kd_tree()
         # self.build_stop_sign_segment_kd_tree()
 
-    def get_lanes(self, point: Optional[Point], distance=0.0) -> Iterable[str]:
+    def get_lanes(self, point: Optional[Point] = None, distance=0.0) -> Iterable[str]:
+        if point is None:
+            return self.lane_table.keys()
         if distance == 0.0:
             return self.lane_table.keys()
         return self.__get_lanes(point, distance)
@@ -216,48 +226,78 @@ class MapService:
 
     def build_routing_graph(self):
         # modules/routing/topo_creator/graph_creator.cc
-        for lane_id in self.lane_table:
-            pred = [x.id for x in self.lane_table[lane_id].predecessor_id]
-            succ = [x.id for x in self.lane_table[lane_id].successor_id]
-            l_neighbor = [
-                x.id for x in self.lane_table[lane_id].left_neighbor_forward_lane_id
-            ]
-            r_neighbor = [
-                x.id for x in self.lane_table[lane_id].right_neighbor_forward_lane_id
-            ]
-            for pid in pred:
-                self.routing_graph.add_edge(pid, lane_id, direction_type="F")
-                self.obs_routing_graph.add_edge(pid, lane_id)
-            for pid in succ:
-                self.routing_graph.add_edge(lane_id, pid, direction_type="F")
-                self.obs_routing_graph.add_edge(lane_id, pid)
+        routing_graph_pickle = Path(
+            Path(self.hd_map_path).parent, "routing_graph.pickle"
+        )
+        obstacle_routing_graph_pickle = Path(
+            Path(self.hd_map_path).parent, "obstacle_routing_graph.pickle"
+        )
+        if routing_graph_pickle.exists() and obstacle_routing_graph_pickle.exists():
+            with open(routing_graph_pickle, "rb") as fp:
+                self.routing_graph = pickle.load(fp)
+            with open(obstacle_routing_graph_pickle, "rb") as fp:
+                self.obs_routing_graph = pickle.load(fp)
+        else:
+            for lane_id in self.lane_table:
+                pred = [x.id for x in self.lane_table[lane_id].predecessor_id]
+                succ = [x.id for x in self.lane_table[lane_id].successor_id]
+                l_neighbor = [
+                    x.id for x in self.lane_table[lane_id].left_neighbor_forward_lane_id
+                ]
+                r_neighbor = [
+                    x.id
+                    for x in self.lane_table[lane_id].right_neighbor_forward_lane_id
+                ]
+                for pid in pred:
+                    self.routing_graph.add_edge(pid, lane_id, direction_type="F")
+                    self.obs_routing_graph.add_edge(pid, lane_id)
+                for pid in succ:
+                    self.routing_graph.add_edge(lane_id, pid, direction_type="F")
+                    self.obs_routing_graph.add_edge(lane_id, pid)
 
-            if (
-                self.lane_table[lane_id].length
-                < MapService.FLAGS_min_length_for_lane_change
-            ):
-                continue
+                if (
+                    self.lane_table[lane_id].length
+                    < MapService.FLAGS_min_length_for_lane_change
+                ):
+                    continue
 
-            for pid in l_neighbor:
-                if is_allowed_to_cross(self.lane_table[pid].left_boundary):
-                    self.routing_graph.add_edge(lane_id, pid, direction_type="L")
-            for pid in r_neighbor:
-                if is_allowed_to_cross(self.lane_table[pid].right_boundary):
-                    self.routing_graph.add_edge(lane_id, pid, direction_type="R")
+                for pid in l_neighbor:
+                    if is_allowed_to_cross(self.lane_table[pid].left_boundary):
+                        self.routing_graph.add_edge(lane_id, pid, direction_type="L")
+                for pid in r_neighbor:
+                    if is_allowed_to_cross(self.lane_table[pid].right_boundary):
+                        self.routing_graph.add_edge(lane_id, pid, direction_type="R")
+            with open(routing_graph_pickle, "wb") as fp:
+                pickle.dump(self.routing_graph, fp)
+            with open(obstacle_routing_graph_pickle, "wb") as fp:
+                pickle.dump(self.obs_routing_graph, fp)
 
     def build_lane_segment_kd_tree(self):
-        params = KDTreeParams(max_leaf_dimension=5.0, max_leaf_size=16)
-        objects = set()
-        for lane_id in self.lane_table:
-            lane_obj = self.lane_table[lane_id]
-            cv = lane_obj.central_curve
-            cv_points = cv.segment[0].line_segment
-            lst = LineString([[x.x, x.y] for x in cv_points.point])
-            segments = list(map(LineString, zip(lst.coords[:-1], lst.coords[1:])))
-            for index, segment in enumerate(segments):
-                self.lane_boxes[segment] = SegmentInfo(lane_id, index)
-                objects.add(segment)
-        self.lane_kdtree = KDTree(objects, params)
+        kd_tree_pickle = Path(Path(self.hd_map_path).parent, "kd_tree.pickle")
+        lane_boxes_pickle = Path(Path(self.hd_map_path).parent, "lane_boxes.pickle")
+
+        if kd_tree_pickle.exists():
+            with open(kd_tree_pickle, "rb") as fp:
+                self.lane_kdtree = pickle.load(fp)
+            with open(lane_boxes_pickle, "rb") as fp:
+                self.lane_boxes = pickle.load(fp)
+        else:
+            params = KDTreeParams(max_leaf_dimension=5.0, max_leaf_size=16)
+            objects = set()
+            for lane_id in self.lane_table:
+                lane_obj = self.lane_table[lane_id]
+                cv = lane_obj.central_curve
+                cv_points = cv.segment[0].line_segment
+                lst = LineString([[x.x, x.y] for x in cv_points.point])
+                segments = list(map(LineString, zip(lst.coords[:-1], lst.coords[1:])))
+                for index, segment in enumerate(segments):
+                    self.lane_boxes[segment] = SegmentInfo(lane_id, index)
+                    objects.add(segment)
+            self.lane_kdtree = KDTree(objects, params)
+            with open(kd_tree_pickle, "wb") as fp:
+                pickle.dump(self.lane_kdtree, fp)
+            with open(lane_boxes_pickle, "wb") as fp:
+                pickle.dump(self.lane_boxes, fp)
 
     def build_junction_polygon_kd_tree(self):
         # params = KDTreeParams(max_leaf_dimension=5.0, max_leaf_size=1)
@@ -358,3 +398,11 @@ class MapService:
 
     def get_length_of_lane(self, lane_id: str) -> float:
         return self.lane_table[lane_id].length
+
+    def get_lane_boundary_curve(self, lane_id: str) -> Tuple[LineString, LineString]:
+        lane = self.lane_table[lane_id]
+        points = lane.left_boundary.curve.segment[0].line_segment
+        left_line = LineString([[x.x, x.y] for x in points.point])
+        points = lane.right_boundary.curve.segment[0].line_segment
+        right_line = LineString([[x.x, x.y] for x in points.point])
+        return left_line, right_line

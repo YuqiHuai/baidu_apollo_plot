@@ -12,9 +12,12 @@ dependencies = [
     "cyber-record (>=0.1.12,<0.2.0)",
     "matplotlib (>=3.10.0,<4.0.0)",
     "shapely (>=2.0.7,<3.0.0)",
-    "networkx (>=3.4.2,<4.0.0)"
+    "networkx (>=3.4.2,<4.0.0)",
+    "rich-argparse (>=1.7.0,<2.0.0)"
 ]
 
+[project.scripts]
+apollo_plot = "baidu_apollo_plot.cli:main"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
